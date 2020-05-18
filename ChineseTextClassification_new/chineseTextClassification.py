@@ -12,12 +12,13 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score, recall_score
 # 隐含层所需要用到的函数，其中Convolution2D是卷积层；Activation是激活函数；MaxPooling2D作为池化层；
 # Flatten是起到将多维输入易卫华的函数；Dense是全连接层
-from keras.layers import MaxPooling1D, Flatten, Dense, Input, Dropout, Embedding, Conv1D
+from keras.layers import MaxPooling1D, Flatten, Dense, Input, Dropout, Embedding, Conv1D, Permute, Reshape, Lambda, \
+    RepeatVector, Multiply, Bidirectional
 from keras import Model
 from keras.preprocessing.text import Tokenizer
 from keras.preprocessing.sequence import pad_sequences
 from keras.layers import concatenate
-from keras.models import load_model
+from keras import backend as K
 
 from snownlp import SnowNLP     # 已封装好的朴素贝叶斯模型
 from sklearn.naive_bayes import MultinomialNB  # 朴素贝叶斯模型
@@ -165,6 +166,8 @@ def train_and_test_split(data):
     y = data['sentiment']
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=22)
     print('按照7：3的比例切分训练集和测试集')
+    with open('data/tran_test_data.pkl', 'wb')as file:
+        pickle.dump((X_train, X_test, y_train, y_test), file)
     return X_train, X_test, y_train, y_test
 
 
@@ -183,7 +186,7 @@ def data_vocab_and_sequence(data, X_train, X_test):
     return vocab, x_train_padded_seqs, x_test_padded_seqs
 
 
-def train_textcnn_keras(vocab, w2v_model, x_train_padded_seqs, y_train):
+def train_textcnn_keras(vocab, w2v_model, x_train_padded_seqs, one_hot_labels):
     """
     基于Keras深度学习框架的Text-CNN（卷积神经网络）模型，训练集和测试集预处理
     :param X_train: 训练集数据
@@ -220,7 +223,7 @@ def train_textcnn_keras(vocab, w2v_model, x_train_padded_seqs, y_train):
     model = Model(inputs=main_input, outputs=main_output)
     model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
 
-    one_hot_labels = tf.keras.utils.to_categorical(y_train, num_classes=2)  # 将标签转换为one-hot编码
+
     model.fit(x_train_padded_seqs, one_hot_labels, batch_size=900, epochs=8)
     model.save('model/text-cnn.h5')
 
@@ -324,11 +327,14 @@ data, stopwords = segmentation_and_stop_words(data)     # 2
 w2v_model = word2vec.Word2Vec.load('model/word2vec.model')    # 3
 # 划分为训练集X和测试集y，train为训练数据，test为标签
 X_train, X_test, y_train, y_test = train_and_test_split(data)   # 4
-
+with open('data/tran_test_data.pkl', 'rb')as file:
+    X_train, X_test, y_train, y_test = pickle.load(file)
+    # 将标签转换为one-hot编码
+one_hot_labels = tf.keras.utils.to_categorical(y_train, num_classes=2)
 # 基于Keras深度学习框架的Text-CNN（卷积神经网络）
 # 生成模型训练的序列特征
 vocab, x_train_padded_seqs, x_test_padded_seqs = data_vocab_and_sequence(data, X_train, X_test)  # 5
-train_textcnn_keras(vocab, w2v_model, x_train_padded_seqs, y_train)  # Text-CNN训练
+train_textcnn_keras(vocab, w2v_model, x_train_padded_seqs, one_hot_labels)  # Text-CNN训练
 test_cnn(x_test_padded_seqs, y_test)  # 测试Text-CNN模型，打印准确率、召回率、F1值    6
 
 # 机器学习
@@ -346,3 +352,36 @@ test_MultinomialNB(vect, X_test, y_test)  # 10
 # 3) KNN模型
 train_knn(X_train, y_train)  # 训练KNN模型
 test_knn(vect, X_test, y_test)  # 测试KNN模型     11
+
+
+# LSTM 模型
+from keras.layers import LSTM
+from keras.optimizers import RMSprop
+from keras.callbacks import EarlyStopping
+from AttentionLayer import AttLayer
+
+# 定义LSTM模型
+lstm_inputs = Input(name='inputs', shape=[400, ])
+# Embedding(词汇表大小, batch大小,每条评论的词长)
+layer = Embedding(len(vocab) + 1, 100, input_length=400)(lstm_inputs)
+layer = LSTM(100, return_sequences=True)(layer)
+layer = AttLayer()(layer)
+# layer = Dense(100, activation='relu', name='FC1')(layer)
+# layer = Dropout(0.5)(layer)
+layer = Dense(2, activation='softmax', name='FC2')(layer)
+lstm_model = Model(inputs=lstm_inputs, outputs=layer)
+lstm_model.summary()
+lstm_model.compile(loss='categorical_crossentropy', optimizer=RMSprop(), metrics=['accuracy'])
+lstm_model_fit = lstm_model.fit(x_train_padded_seqs, one_hot_labels, batch_size=800, epochs=5,
+                                callbacks=[EarlyStopping(monitor='val_loss', min_delta=0.0001)])
+test_pre = lstm_model.predict(x_test_padded_seqs)
+confm = accuracy_score(list(np.argmax(test_pre, axis=1)), y_test)
+print('================LSTM算法=================')
+print("LSTM模型准确率:", confm)
+
+
+# 释放GPU显存
+from numba import cuda
+cuda.select_device(0)
+cuda.close()
+

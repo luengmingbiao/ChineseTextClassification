@@ -1,14 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData">
+  <component name="PublishConfigData" autoUpload="Always" serverName="root@192.168.8.105:22">
     <serverData>
-      <paths name="root@192.168.8.105:22">
+      <paths name="luengmingbiao@113.108.182.54:7054">
         <serverdata>
           <mappings>
             <mapping local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>
+      <paths name="root@192.168.8.105:22">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/master/pythonProject/ChineseTextClassification" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
     </serverData>
+    <option name="myAutoUpload" value="ALWAYS" />
   </component>
 </project>
