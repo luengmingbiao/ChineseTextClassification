@@ -12,17 +12,18 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score, recall_score
 # 隐含层所需要用到的函数，其中Convolution2D是卷积层；Activation是激活函数；MaxPooling2D作为池化层；
 # Flatten是起到将多维输入易卫华的函数；Dense是全连接层
-from keras.layers import MaxPooling1D, Flatten, Dense, Input, Dropout, Embedding, Conv1D, Permute, Reshape, Lambda, \
-    RepeatVector, Multiply, Bidirectional
+from keras.layers import MaxPooling1D, Flatten, Dense, Input, Dropout, Embedding, Conv1D
 from keras import Model
 from keras.preprocessing.text import Tokenizer
 from keras.preprocessing.sequence import pad_sequences
 from keras.layers import concatenate
-from keras import backend as K
+# LSTM 模型
+from keras.layers import LSTM
+from keras.optimizers import RMSprop
+from keras.callbacks import EarlyStopping, ModelCheckpoint, TensorBoard
 
-from snownlp import SnowNLP     # 已封装好的朴素贝叶斯模型
+from snownlp import SnowNLP  # 已封装好的朴素贝叶斯模型
 from sklearn.naive_bayes import MultinomialNB  # 朴素贝叶斯模型
-
 from sklearn.neighbors import KNeighborsClassifier  # KNN模型
 
 import pickle  # 序列化保存模型
@@ -125,6 +126,8 @@ def segmentation_and_stop_words(data):
     print("停用词处理后保存在本项目的filter_data.txt")
 
     # data.to_csv('data/cnn_train_data.csv', index=False, sep='\t', encoding='utf-8')
+    with open('data/stopWord.pkl', 'wb')as file:
+        pickle.dump(stopwords, file)
     return data, stopwords
 
 
@@ -223,7 +226,6 @@ def train_textcnn_keras(vocab, w2v_model, x_train_padded_seqs, one_hot_labels):
     model = Model(inputs=main_input, outputs=main_output)
     model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
 
-
     model.fit(x_train_padded_seqs, one_hot_labels, batch_size=900, epochs=8)
     model.save('model/text-cnn.h5')
 
@@ -317,16 +319,57 @@ def test_knn(vect, X_test, y_test):
     print('KNN模型的f1-score:', f1_score(y_test, y_predict, average='weighted'))
 
 
+def train_Lstm(x_train_padded_seqs, one_hot_labels):
+    # 定义LSTM模型
+    lstm_inputs = Input(name='inputs', shape=[400, ], dtype=tf.float32)
+    # Embedding(词汇表大小, batch大小,每条评论的词长)
+    layer = Embedding(len(vocab) + 1, 100, input_length=400)(lstm_inputs)
+    # layer = Conv1D(32, 3, activation='relu', kernel_initializer='he_normal')(layer)
+    # layer = Conv1D(64, 1, activation='relu', kernel_initializer='he_normal')(layer)
+    # layer = AveragePooling1D(pool_size=7)(layer)   # 降采样缩小上下文信息间隔
+    layer = LSTM(100, return_sequences=True)(layer)
+    layer = LSTM(100, return_sequences=False)(layer)
+    # layer = Bidirectional(LSTM(100, return_sequences=True))(layer)
+    # layer = GRU(100, return_sequences=True)(layer)
+    # layer = AttLayer()(layer)
+    layer = Dense(100, activation='relu', name='FC1')(layer)
+    layer = Dropout(0.5)(layer)
+    layer = Dense(2, activation='softmax', name='FC2')(layer)
+    lstm_model = Model(inputs=lstm_inputs, outputs=layer)
+    lstm_model.summary()
+    lstm_model.compile(loss='categorical_crossentropy', optimizer=RMSprop(), metrics=['accuracy'])
+
+    callback_lis = [ModelCheckpoint('best_lstm_model.h5', monitor='accuracy', mode='max',
+                                    save_best_only=True, save_weights_only=False),
+                    # TensorBoard(log_dir='./tf_logs', batch_size=800, histogram_freq=1, write_grads=False),
+                    EarlyStopping(monitor='loss', min_delta=0.0001)]
+
+    lstm_model_fit = lstm_model.fit(x_train_padded_seqs, one_hot_labels, batch_size=256, epochs=5,
+                                    callbacks=callback_lis)
+    return lstm_model, lstm_model_fit
+
+
+# 配置keras自适应使用显存
+gpus = tf.config.experimental.list_physical_devices(device_type='GPU')
+for gpu in gpus:
+    tf.config.experimental.set_memory_growth(gpu, True)
+# 设置随机种子
+np.random.seed(123)
+
 # 数据清洗，生成评论数据和情感分类标签
-data = data_pre_process()   # 1
+data = data_pre_process()  # 1
 # 文本中文分词，停用词处理，并保存处理后的文件filter_data.txt
-data, stopwords = segmentation_and_stop_words(data)     # 2
+data, stopwords = segmentation_and_stop_words(data)  # 2
 # 读取filter_data.txt本地文件后训练预训练词向量模型
 # w2v_model = train_word2vec()
 # 读取项目本地词向量模型和预训练词向量
-w2v_model = word2vec.Word2Vec.load('model/word2vec.model')    # 3
+data = pd.read_csv('data/data.csv')
+data['cut_comment'] = data['cut_comment'].astype(str)
+with open('data/stopWord.pkl', 'rb') as file:
+    stopwords = pickle.load(file)
+w2v_model = word2vec.Word2Vec.load('model/word2vec.model')  # 3
 # 划分为训练集X和测试集y，train为训练数据，test为标签
-X_train, X_test, y_train, y_test = train_and_test_split(data)   # 4
+X_train, X_test, y_train, y_test = train_and_test_split(data)  # 4
 with open('data/tran_test_data.pkl', 'rb')as file:
     X_train, X_test, y_train, y_test = pickle.load(file)
     # 将标签转换为one-hot编码
@@ -343,8 +386,9 @@ SnowNLP_Model(data)  # 训练
 test_snownlp()  # 测试SnowNLP，打印准确率、召回率、F1值   7
 # 2) 朴素贝叶斯模型
 # 词频统计
-vect = CountVectorizer(max_df=0.8, min_df=3, token_pattern=u'(?u)\\b[^\\d\\W]\\w+\\b', stop_words=frozenset(stopwords))     # 8
-x_train_vect = vect.fit_transform(X_train)      # 9
+vect = CountVectorizer(max_df=0.8, min_df=3, token_pattern=u'(?u)\\b[^\\d\\W]\\w+\\b',
+                       stop_words=frozenset(stopwords))  # 8
+x_train_vect = vect.fit_transform(X_train)  # 9
 # 训练朴素贝叶斯模型
 nb = train_MultinomialNB(X_train, y_train)
 # 测试朴素贝叶斯模型
@@ -352,36 +396,15 @@ test_MultinomialNB(vect, X_test, y_test)  # 10
 # 3) KNN模型
 train_knn(X_train, y_train)  # 训练KNN模型
 test_knn(vect, X_test, y_test)  # 测试KNN模型     11
+# 4) SVM模型
+from sklearn.svm import LinearSVC
+from sklearn import svm
+clf = svm.SVC(gamma='scale')
+clf.fit(x_train_vect, y_train)
 
-
-# LSTM 模型
-from keras.layers import LSTM
-from keras.optimizers import RMSprop
-from keras.callbacks import EarlyStopping
-from AttentionLayer import AttLayer
-
-# 定义LSTM模型
-lstm_inputs = Input(name='inputs', shape=[400, ])
-# Embedding(词汇表大小, batch大小,每条评论的词长)
-layer = Embedding(len(vocab) + 1, 100, input_length=400)(lstm_inputs)
-layer = LSTM(100, return_sequences=True)(layer)
-layer = AttLayer()(layer)
-# layer = Dense(100, activation='relu', name='FC1')(layer)
-# layer = Dropout(0.5)(layer)
-layer = Dense(2, activation='softmax', name='FC2')(layer)
-lstm_model = Model(inputs=lstm_inputs, outputs=layer)
-lstm_model.summary()
-lstm_model.compile(loss='categorical_crossentropy', optimizer=RMSprop(), metrics=['accuracy'])
-lstm_model_fit = lstm_model.fit(x_train_padded_seqs, one_hot_labels, batch_size=800, epochs=5,
-                                callbacks=[EarlyStopping(monitor='val_loss', min_delta=0.0001)])
+# LSTM模型
+lstm_model, lstm_model_fit = train_Lstm(x_train_padded_seqs, one_hot_labels)
 test_pre = lstm_model.predict(x_test_padded_seqs)
 confm = accuracy_score(list(np.argmax(test_pre, axis=1)), y_test)
 print('================LSTM算法=================')
 print("LSTM模型准确率:", confm)
-
-
-# 释放GPU显存
-from numba import cuda
-cuda.select_device(0)
-cuda.close()
-
